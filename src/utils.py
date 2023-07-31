@@ -160,7 +160,7 @@ def unnormalize(X, E, y, norm_values, norm_biases, node_mask, collapse=False):
 
 
 def to_dense(x, edge_index, edge_attr, batch):
-    X, node_mask = to_dense_batch(x=x, batch=batch)
+    X, node_mask = to_dense_batch(x=x, batch=batch)#torch_geometric.utils.to_dense_batch(x, batch, fill_value=0)
     # node_mask = node_mask.float()
     edge_index, edge_attr = torch_geometric.utils.remove_self_loops(edge_index, edge_attr)
     # TODO: carefully check if setting node_mask as a bool breaks the continuous case

@@ -120,22 +120,26 @@ class DiscreteDenoisingDiffusion(pl.LightningModule):
         self.best_val_nll = 1e8
         self.val_counter = 0
 
+    #pytorh-lightning的训练循环
     def training_step(self, data, i):
         if data.edge_index.numel() == 0:
             print("Found a batch with no edges. Skipping.")
             return
-        #将稀疏数据转换为稠密数据
-        #所有图按照最大节点数进行填充，不足的节点用0填充
+        #将稀疏数据转换为稠密数据,让所有图的batch的图矩阵形状一样，不足的节点用0填充,生成一个(图数，最大节点数，最大节点数)的矩阵
+        #就是所有图按照最大节点数进行填充，不足的节点用0填充
         #node_mask记录了哪些节点是真实节点，哪些是填充节点
         dense_data, node_mask = utils.to_dense(data.x, data.edge_index, data.edge_attr, data.batch)
+        #根据node_mask,进一步进行mask，得到真实的节点数
+        #尽管已经置0,进行mask操作仍有优化表示、减少干扰、提高灵活性等好处
         dense_data = dense_data.mask(node_mask)
         X, E = dense_data.X, dense_data.E
+        "注意apply_noise操作仍然只对非填充节点进行操作，填充节点不进行操作!!!生成的噪声图仍然是跟原图结构一致"
         noisy_data = self.apply_noise(X, E, data.y, node_mask)
         extra_data = self.compute_extra_data(noisy_data)
 
         #forward就是把噪声数据和额外的特征要求传入graph transformer model，得到预测结果
         pred = self.forward(noisy_data, extra_data, node_mask)
-        #这里直接给噪声然后预测真值，在采样的时候就可以用这个预测的真值，计算t-1时刻的采样
+        #这里直接(在原图上对于已有的节点，不改变结构！！)给噪声然后预测真值，在采样的时候就可以用这个预测的真值，计算t-1时刻的采样
         #true_X, true_E, true_y同时作为真值与预测值做loss计算
         loss = self.train_loss(masked_pred_X=pred.X, masked_pred_E=pred.E, pred_y=pred.y,
                                true_X=X, true_E=E, true_y=data.y,
@@ -522,6 +526,10 @@ class DiscreteDenoisingDiffusion(pl.LightningModule):
         :param keep_chain_steps: number of timesteps to save for each chain
         :return: molecule_list. Each element of this list is a tuple (atom_types, charges, positions)
         """
+        #(需要修改！！)正常情况下按照给出的节点数进行生成，如果没有给出节点数，则按照数据集分布进行随机生成
+        #我们的识别扩散模型应该按照当前的噪声图和原图的节点数进行直接对应的生成，而不是其他
+        #调用sample_n函数时直接使用原图的节点数进行生成
+        #同时设置n_nodes = num_nodes
         if num_nodes is None:
             n_nodes = self.node_dist.sample_n(batch_size, self.device)
         elif type(num_nodes) == int:
