@@ -540,22 +540,62 @@ class DiscreteDenoisingDiffusion(pl.LightningModule):
         n_max = torch.max(n_nodes).item()
         # Build the masks
         arange = torch.arange(n_max, device=self.device).unsqueeze(0).expand(batch_size, -1)
+        """
+        arange = tensor([[0, 1, 2, 3, 4],
+                 [0, 1, 2, 3, 4],
+                 [0, 1, 2, 3, 4]])
+        """
         node_mask = arange < n_nodes.unsqueeze(1)
+        """
+        node_mask = tensor([[True, True, False, False, False],
+                    [True, True, True, False, False],
+                    [True, True, True, True, True]])
+        """
         # TODO: how to move node_mask on the right device in the multi-gpu case?
         # TODO: everything else depends on its device
         # Sample noise  -- z has size (n_samples, n_nodes, n_features)
+        '''
+        这里limit_dist就把它看作ground-truth distribution或者叫目标分布,根据真实分布生成噪声图
+        马尔可夫链中，一个常见的问题是当时间趋于无穷时，随机过程的状态将会趋向于哪里。
+        这被称为该随机过程的稳定分布或者极限分布（limiting distribution）。
+        '''
+        #生成噪声，一步完成，不需要迭代
         z_T = diffusion_utils.sample_discrete_feature_noise(limit_dist=self.limit_dist, node_mask=node_mask)
         X, E, y = z_T.X, z_T.E, z_T.y
 
+        #检查E是否是一个对称的张量
         assert (E == torch.transpose(E, 1, 2)).all()
         assert number_chain_steps < self.T
+        
+        #按照采样链长度、保存链数和原始图大小定义，生成保存采样结果的张量
+        #还需要加入chian_Y!!
         chain_X_size = torch.Size((number_chain_steps, keep_chain, X.size(1)))
         chain_E_size = torch.Size((number_chain_steps, keep_chain, E.size(1), E.size(2)))
 
         chain_X = torch.zeros(chain_X_size)
         chain_E = torch.zeros(chain_E_size)
 
+        #注意这里的采用过程不会直接改变原始图的结构，论文中是设置分类结果可能为空，来生成新的结构
+        #采样通过循环迭代
         # Iteratively sample p(z_s | z_t) for t = 1, ..., T, with s = t - 1.
+        #s是当前时刻，t是上一时刻
+        """
+        eg:
+        self.T = 10
+        batch_size = 3
+        keep_chain = 2
+        进行0到9的逆向迭代:
+        s_array = [9, 9, 9]
+        t_array = s_array + 1 = [10, 10, 10]
+        将s_array和t_array归一化到0-1区间
+        调用sample_p_zs_given_zt采样,输入归一化后的s, t
+        得到sampled_s和discrete_sampled_s
+        更新采样结果X,E,y
+        write_index = floor(s/steps),在chain_X中保存采样结果
+        重复进行逆向迭代采样
+        最终调用mask处理采样结果
+        更新X,E,y为遮蔽后的采样图
+        """
         for s_int in reversed(range(0, self.T)):
             s_array = s_int * torch.ones((batch_size, 1)).type_as(y)
             t_array = s_array + 1
@@ -628,6 +668,7 @@ class DiscreteDenoisingDiffusion(pl.LightningModule):
 
 ######逆扩散的最核心逻辑！！！！
     #s就是t-1步
+    #需要加入对Y的采样
     def sample_p_zs_given_zt(self, s, t, X_t, E_t, y_t, node_mask):
         """Samples from zs ~ p(zs | zt). Only used during sampling.
            if last_step, return the graph prediction as well"""

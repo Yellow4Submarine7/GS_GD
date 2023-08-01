@@ -355,11 +355,15 @@ def posterior_distributions(X, E, y, X_t, E_t, y_t, Qt, Qsb, Qtb):
 def sample_discrete_feature_noise(limit_dist, node_mask):
     """ Sample from the limit distribution of the diffusion process"""
     bs, n_max = node_mask.shape
+    #让x,e,y中每个元素都是一个概率分布,如[0.3,0.3,0.4]
+    #因为每个元素所属的类别不确定，所以这里是-1，表示待定
     x_limit = limit_dist.X[None, None, :].expand(bs, n_max, -1)
     e_limit = limit_dist.E[None, None, None, :].expand(bs, n_max, n_max, -1)
     y_limit = limit_dist.y[None, :].expand(bs, -1)
+    #根据概率分布采样,并把生成的类别放回去
     U_X = x_limit.flatten(end_dim=-2).multinomial(1).reshape(bs, n_max)
     U_E = e_limit.flatten(end_dim=-2).multinomial(1).reshape(bs, n_max, n_max)
+    #这里y为空，没有对其进行采样，需要修改！！！
     U_y = torch.empty((bs, 0))
 
     long_mask = node_mask.long()
@@ -367,14 +371,20 @@ def sample_discrete_feature_noise(limit_dist, node_mask):
     U_E = U_E.type_as(long_mask)
     U_y = U_y.type_as(long_mask)
 
+    #将各个元素的类别转换成one-hot编码
+    #需要添加U_y的one-hot编码!!
     U_X = F.one_hot(U_X, num_classes=x_limit.shape[-1]).float()
     U_E = F.one_hot(U_E, num_classes=e_limit.shape[-1]).float()
 
     # Get upper triangular part of edge noise, without main diagonal
+    #创建一个与U_E形状相同的全0张量
     upper_triangular_mask = torch.zeros_like(U_E)
+    #创建一个上三角矩阵的索引(不包括对角线)
     indices = torch.triu_indices(row=U_E.size(1), col=U_E.size(2), offset=1)
+    #将上三角矩阵(不包括对角线)的索引位置置为1
     upper_triangular_mask[:, indices[0], indices[1], :] = 1
 
+    #保证E是对称矩阵,E是边的one-hot编码
     U_E = U_E * upper_triangular_mask
     U_E = (U_E + torch.transpose(U_E, 1, 2))
 
