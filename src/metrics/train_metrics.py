@@ -17,18 +17,25 @@ class EdgeMSE(MeanSquaredError):
     def __init__(self, *args):
         super().__init__(*args)
 
+#增加Label(Y)的MSE
+class LabelMSE(MeanSquaredError):
+    def __init__(self, *args):
+        super().__init__(*args)
 
+
+#连续扩散的MSE(可不作修改)
 class TrainLoss(nn.Module):
     def __init__(self):
         super(TrainLoss, self).__init__()
         self.train_node_mse = NodeMSE()
         self.train_edge_mse = EdgeMSE()
-        self.train_y_mse = MeanSquaredError()
+        self.train_y_mse = LabelMSE()
 
     def forward(self, masked_pred_epsX, masked_pred_epsE, pred_y, true_epsX, true_epsE, true_y, log: bool):
         mse_X = self.train_node_mse(masked_pred_epsX, true_epsX) if true_epsX.numel() > 0 else 0.0
         mse_E = self.train_edge_mse(masked_pred_epsE, true_epsE) if true_epsE.numel() > 0 else 0.0
         mse_y = self.train_y_mse(pred_y, true_y) if true_y.numel() > 0 else 0.0
+        #目前是将三个MSE相加，三个元素作用平均，后续可能需要考虑提高y的权重
         mse = mse_X + mse_E + mse_y
 
         if log:
@@ -40,10 +47,12 @@ class TrainLoss(nn.Module):
 
         return mse
 
+    #重置三个MSE，用于下一个批次的计算
     def reset(self):
         for metric in (self.train_node_mse, self.train_edge_mse, self.train_y_mse):
             metric.reset()
 
+    #输出当前周期的平均MSE
     def log_epoch_metrics(self, current_epoch, start_epoch_time):
         epoch_node_mse = self.train_node_mse.compute() if self.train_node_mse.total > 0 else -1
         epoch_edge_mse = self.train_edge_mse.compute() if self.train_edge_mse.total > 0 else -1
@@ -60,7 +69,7 @@ class TrainLoss(nn.Module):
         for metric in [self.train_node_mse, self.train_edge_mse, self.train_y_mse]:
             metric.reset()
 
-
+#离散扩散的MSE,这里
 class TrainLossDiscrete(nn.Module):
     """ Train with Cross entropy"""
     def __init__(self, lambda_train):
@@ -68,6 +77,8 @@ class TrainLossDiscrete(nn.Module):
         self.node_loss = CrossEntropyMetric()
         self.edge_loss = CrossEntropyMetric()
         self.y_loss = CrossEntropyMetric()
+        #lambda_train是一个超参数，用于调整三个损失函数的权重,所以这里不需要在这里对权重进行调整
+        #注意这里lambda_train是调整E和y的，X固定为1
         self.lambda_train = lambda_train
 
     def forward(self, masked_pred_X, masked_pred_E, pred_y, true_X, true_E, true_y, log: bool):
@@ -79,12 +90,14 @@ class TrainLossDiscrete(nn.Module):
         true_E : tensor -- (bs, n, n, de)
         true_y : tensor -- (bs, )
         log : boolean. """
+        #为了计算损失，需要将X和E进行reshape，展平为二维矩阵
         true_X = torch.reshape(true_X, (-1, true_X.size(-1)))  # (bs * n, dx)
         true_E = torch.reshape(true_E, (-1, true_E.size(-1)))  # (bs * n * n, de)
         masked_pred_X = torch.reshape(masked_pred_X, (-1, masked_pred_X.size(-1)))  # (bs * n, dx)
         masked_pred_E = torch.reshape(masked_pred_E, (-1, masked_pred_E.size(-1)))   # (bs * n * n, de)
 
         # Remove masked rows
+        #mask_X和mask_E是用于去除掉true_X和true_E中的0行，因为0行是填充的，不需要计算损失
         mask_X = (true_X != 0.).any(dim=-1)
         mask_E = (true_E != 0.).any(dim=-1)
 
@@ -105,6 +118,7 @@ class TrainLossDiscrete(nn.Module):
                       "train_loss/E_CE": loss_E if true_E.numel() > 0 else -1,
                       "train_loss/y_CE": self.node_loss.compute() if true_y.numel() > 0 else -1}
             wandb.log(to_log, commit=True)
+        #注意这里lambda_train是调整E和y的，X固定为1
         return loss_X + self.lambda_train[0] * loss_E + self.lambda_train[1] * loss_y
 
     def reset(self):

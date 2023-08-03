@@ -14,6 +14,11 @@ from metrics.train_metrics import TrainLossDiscrete
 from metrics.abstract_metrics import SumExceptBatchMetric, SumExceptBatchKL, NLL
 from src import utils
 
+"""
+整个代码的逻辑是使用mask标记填充的位置，不对其进行计算，这样不会改变图的结构，但是会改变图的特征
+严格基于原图结构进行生成,不会自动增添新的节点和边。
+所以只需要增加对Y的计算部分即可
+"""
 #继承自lightning的模型类
 class DiscreteDenoisingDiffusion(pl.LightningModule):
     def __init__(self, cfg, dataset_infos, train_metrics, sampling_metrics, visualization_tools, extra_features,
@@ -21,6 +26,7 @@ class DiscreteDenoisingDiffusion(pl.LightningModule):
         super().__init__()
 
         #input_dims和output_dims是当前数据集的X，E，y的分类数量(即维度)
+        #dist->distribution
         input_dims = dataset_infos.input_dims
         output_dims = dataset_infos.output_dims
         nodes_dist = dataset_infos.nodes_dist
@@ -40,6 +46,7 @@ class DiscreteDenoisingDiffusion(pl.LightningModule):
 
         self.dataset_info = dataset_infos
 
+        #TrainLossDiscrete中包含了X和E以及Y的损失计算,不需要额外添加
         self.train_loss = TrainLossDiscrete(self.cfg.model.lambda_train)
 
         #PyToch Lightning的指标计算，获取以评估模型性能，这里添加对Y的指标计算!!
@@ -103,6 +110,7 @@ class DiscreteDenoisingDiffusion(pl.LightningModule):
                 y_marginals = torch.from_numpy(np.array(数据集中y的分布)) 
                 self.y_transition = y_marginals.unsqueeze(-1) * y_marginals.unsqueeze(0) 
             '''
+            #需要增加y的边缘分布
             edge_types = self.dataset_info.edge_types.float()
             e_marginals = edge_types / torch.sum(edge_types)
             print(f"Marginal distribution of the classes: {x_marginals} for nodes, {e_marginals} for edges")
@@ -138,6 +146,7 @@ class DiscreteDenoisingDiffusion(pl.LightningModule):
         extra_data = self.compute_extra_data(noisy_data)
 
         #forward就是把噪声数据和额外的特征要求传入graph transformer model，得到预测结果
+        #预测也只对非填充节点进行操作，填充节点不进行操作
         pred = self.forward(noisy_data, extra_data, node_mask)
         #这里直接(在原图上对于已有的节点，不改变结构！！)给噪声然后预测真值，在采样的时候就可以用这个预测的真值，计算t-1时刻的采样
         #true_X, true_E, true_y同时作为真值与预测值做loss计算
@@ -669,10 +678,12 @@ class DiscreteDenoisingDiffusion(pl.LightningModule):
 ######逆扩散的最核心逻辑！！！！
     #s就是t-1步
     #需要加入对Y的采样
+    #该函数仅对非填充节点进行采样，不改变图结构
     def sample_p_zs_given_zt(self, s, t, X_t, E_t, y_t, node_mask):
         """Samples from zs ~ p(zs | zt). Only used during sampling.
            if last_step, return the graph prediction as well"""
         bs, n, dxs = X_t.shape
+        #分别取到alpha和beta
         beta_t = self.noise_schedule(t_normalized=t)  # (bs, 1)
         alpha_s_bar = self.noise_schedule.get_alpha_bar(t_normalized=s)
         alpha_t_bar = self.noise_schedule.get_alpha_bar(t_normalized=t)
@@ -692,6 +703,7 @@ class DiscreteDenoisingDiffusion(pl.LightningModule):
         判断当前这个节点是否属于query节点的相同社区'''
         '''这样我们就可以实现子图的识别了'''
         # Normalize predictions
+        # 增加对Y的预测
         pred_X = F.softmax(pred.X, dim=-1)               # bs, n, d0
         pred_E = F.softmax(pred.E, dim=-1)               # bs, n, n, d0
 
